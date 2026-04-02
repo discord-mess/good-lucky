@@ -1,4 +1,4 @@
-$urls = (iwr "https://github.com/discord-mess/good-lucky/raw/refs/heads/main/best_urls.txt").Content -split "`n"
+$urls = (iwr "https://raw.githubusercontent.com/discord-mess/good-lucky/refs/heads/main/assets/best_urls.txt").Content -split "`n"
 
 foreach ($u in $urls) {
     $u = $u.Trim()
@@ -10,7 +10,7 @@ foreach ($u in $urls) {
 }
 
 
-$urls = (iwr "https://github.com/discord-mess/good-lucky/raw/refs/heads/main/urls.txt").Content -split "`n"
+$urls = (iwr "https://raw.githubusercontent.com/discord-mess/good-lucky/refs/heads/main/assets/urls.txt").Content -split "`n"
 
 foreach ($u in $urls) {
     $u = $u.Trim()
