@@ -9,7 +9,7 @@ $allUrls = foreach ($s in $sources) {
 }
 
 # Cấu hình số lượng luồng tối đa (5 tasks)
-$maxThreads = 5
+$maxThreads = 50
 $jobs = @()
 
 foreach ($u in $allUrls) {
